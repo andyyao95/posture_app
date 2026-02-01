@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+
+  <title>Posture Monitor Pro</title>
+
+  <!-- iOS "app-like" meta -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Posture">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="manifest" href="manifest.json">
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0f172a; color: white; min-height: 100vh; overflow-x: hidden; }
+    .container { max-width: 560px; margin: 0 auto; padding: 12px; padding-bottom: 100px; }
+    h1 { text-align: center; font-size: 18px; margin-bottom: 10px; color: #e2e8f0; }
+
+    /* Mini indicator */
+    .mini-indicator { position: fixed; top: 10px; right: 10px; width: 50px; height: 70px; background: rgba(30,41,59,0.95); border-radius: 10px; z-index: 1000; display: none; flex-direction: column; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(0,0,0,0.3); cursor: pointer; }
+    .mini-indicator.good { background: rgba(22,101,52,0.95); }
+    .mini-indicator.bad { background: rgba(153,27,27,0.95); }
+    .mini-indicator.shake { animation: shake 0.5s ease-in-out; }
+    @keyframes shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+    .stick-figure { font-size: 28px; line-height: 1; }
+    .mini-score { font-size: 10px; font-weight: 600; margin-top: 2px; }
+
+    /* Video section */
+    .video-section { position: relative; background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 10px; }
+    video { display: none; }
+    canvas { width: 100%; display: block; }
+    .video-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.9); text-align: center; padding: 20px; }
+    .video-overlay.hidden { display: none; }
+    .video-overlay h2 { font-size: 16px; margin-bottom: 8px; }
+    .video-overlay p { color: #94a3b8; font-size: 13px; max-width: 280px; line-height: 1.4; }
+
+    /* Progress bar for calibration */
+    .calib-progress { width: 180px; height: 6px; background: #334155; border-radius: 3px; margin: 12px 0; overflow: hidden; }
+    .calib-progress .fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6); width: 0%; transition: width 0.1s; }
+
+    /* Status section */
+    .status-card { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; margin-bottom: 10px; background: #1e293b; transition: background 0.3s; }
+    .status-card.good { background: linear-gradient(135deg, #166534, #14532d); }
+    .status-card.bad { background: linear-gradient(135deg, #991b1b, #7f1d1d); }
+    .status-card.warn { background: linear-gradient(135deg, #92400e, #78350f); }
+    .status-icon { font-size: 24px; flex-shrink: 0; }
+    .status-text { flex: 1; min-width: 0; }
+    .status-main { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status-sub { font-size: 11px; color: rgba(255,255,255,0.7); margin-top: 2px; }
+
+    /* Stats row */
+    .stats-row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    .stat-card { flex: 1; min-width: 110px; background: #1e293b; border-radius: 8px; padding: 10px; text-align: center; }
+    .stat-label { font-size: 10px; color: #64748b; text-transform: uppercase; }
+    .stat-value { font-size: 18px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .stat-value.good { color: #4ade80; }
+    .stat-value.bad { color: #f87171; }
+
+    /* Session timer */
+    .session-bar { display: flex; align-items: center; justify-content: space-between; background: #1e293b; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; font-size: 12px; gap: 8px; }
+    .session-bar .timer { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .break-btn { background: #475569; border: none; color: white; padding: 6px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+
+    /* Buttons */
+    .btn-row { display: flex; gap: 8px; margin-bottom: 10px; }
+    button { flex: 1; padding: 12px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; color: white; transition: transform 0.1s, opacity 0.2s; }
+    button:active { transform: scale(0.98); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+    .btn-success { background: linear-gradient(135deg, #22c55e, #16a34a); }
+    .btn-danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
+    .btn-secondary { background: #475569; }
+
+    /* Collapsible sections */
+    .section { background: #1e293b; border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+    .section-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; cursor: pointer; user-select: none; }
+    .section-header h3 { font-size: 13px; font-weight: 600; }
+    .section-header .toggle { font-size: 12px; color: #64748b; }
+    .section-content { padding: 0 14px 14px; display: none; }
+    .section.open .section-content { display: block; }
+    .section.open .toggle { transform: rotate(180deg); }
+
+    /* Settings */
+    .setting-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #334155; gap: 10px; }
+    .setting-row:last-child { border-bottom: none; }
+    .setting-label { font-size: 13px; }
+    .setting-label small { display: block; color: #64748b; font-size: 10px; margin-top: 2px; }
+    .toggle-btn { width: 44px; height: 24px; background: #475569; border-radius: 12px; position: relative; border: none; cursor: pointer; transition: background 0.2s; flex: 0 0 auto; }
+    .toggle-btn.on { background: #3b82f6; }
+    .toggle-btn::after { content: ''; position: absolute; width: 20px; height: 20px; background: white; border-radius: 50%; top: 2px; left: 2px; transition: transform 0.2s; }
+    .toggle-btn.on::after { transform: translateX(20px); }
+    .slider-wrap { width: 140px; }
+    .slider-wrap input { width: 100%; }
+    .slider-labels { display: flex; justify-content: space-between; font-size: 9px; color: #64748b; margin-top: 2px; }
+
+    /* Stretch suggestions */
+    .stretch-card { background: #334155; border-radius: 8px; padding: 12px; margin-top: 10px; }
+    .stretch-card h4 { font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
+    .stretch-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #475569; }
+    .stretch-item:last-child { border-bottom: none; }
+    .stretch-icon { font-size: 20px; }
+    .stretch-info { flex: 1; }
+    .stretch-name { font-size: 13px; font-weight: 500; }
+    .stretch-desc { font-size: 11px; color: #94a3b8; }
+
+    /* Toast notification */
+    .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: #334155; padding: 12px 20px; border-radius: 10px; font-size: 13px; z-index: 1001; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+
+    /* Break reminder modal */
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: none; align-items: center; justify-content: center; z-index: 1002; padding: 20px; }
+    .modal.show { display: flex; }
+    .modal-content { background: #1e293b; border-radius: 16px; padding: 24px; max-width: 320px; text-align: center; }
+    .modal-content h2 { font-size: 18px; margin-bottom: 8px; }
+    .modal-content p { color: #94a3b8; font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
+    .modal-content button { width: 100%; margin-top: 8px; }
+
+    /* Tips section */
+    .tips { color: #64748b; font-size: 12px; line-height: 1.5; padding: 12px; background: #1e293b; border-radius: 10px; }
+    .tips strong { color: #94a3b8; }
+  </style>
+</head>
+
+<body>
+  <div class="mini-indicator" id="miniIndicator" title="Click to expand">
+    <div class="stick-figure" id="stickFigure">🧍</div>
+    <div class="mini-score" id="miniScore">--</div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <div class="modal" id="breakModal">
+    <div class="modal-content">
+      <h2>⏰ Time for a Break!</h2>
+      <p>You've been sitting for a while. Stand up, stretch, and give your eyes a rest from the screen.</p>
+      <div class="stretch-card">
+        <h4>Quick Stretches</h4>
+        <div class="stretch-item"><span class="stretch-icon">🙆</span><div class="stretch-info"><div class="stretch-name">Neck Rolls</div><div class="stretch-desc">Slowly roll head in circles, 5 each direction</div></div></div>
+        <div class="stretch-item"><span class="stretch-icon">🤷</span><div class="stretch-info"><div class="stretch-name">Shoulder Shrugs</div><div class="stretch-desc">Raise shoulders to ears, hold 5s, release</div></div></div>
+      </div>
+      <button class="btn-primary" onclick="dismissBreak()">Done Stretching!</button>
+      <button class="btn-secondary" onclick="snoozeBreak()">Remind in 5 min</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <h1>📐 Posture Monitor Pro</h1>
+
+    <div class="video-section">
+      <video id="video" playsinline></video>
+      <canvas id="canvas"></canvas>
+
+      <div class="video-overlay" id="overlayIdle">
+        <h2>Ready to Monitor Your Posture</h2>
+        <p>Position your camera to capture your side profile. Make sure your ear, shoulder, and hip are visible.</p>
+      </div>
+
+      <div class="video-overlay hidden" id="overlayCalib">
+        <h2>📸 Calibrating...</h2>
+        <p>Sit with your best posture. Allow slight natural movement—don't freeze!</p>
+        <div class="calib-progress"><div class="fill" id="calibFill"></div></div>
+        <p id="calibText">Collecting: 0/60</p>
+      </div>
+    </div>
+
+    <div class="status-card" id="statusCard">
+      <span class="status-icon" id="statusIcon">⏸️</span>
+      <div class="status-text">
+        <div class="status-main" id="statusMain">Ready</div>
+        <div class="status-sub" id="statusSub">Tap Start to begin monitoring</div>
+      </div>
+    </div>
+
+    <div class="session-bar" id="sessionBar" style="display:none;">
+      <span>Session: <span class="timer" id="sessionTimer">00:00</span></span>
+      <span>Good: <span id="goodPct">--%</span></span>
+      <button class="break-btn" onclick="takeBreak()">Take Break</button>
+    </div>
+
+    <div class="stats-row" id="statsRow" style="display:none;">
+      <div class="stat-card">
+        <div class="stat-label">Score</div>
+        <div class="stat-value" id="scoreVal">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Head Fwd</div>
+        <div class="stat-value" id="fwdHeadVal">OK</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Head Prot</div>
+        <div class="stat-value" id="headProtVal">OK</div>
+      </div>
+    </div>
+
+    <div class="stats-row" id="statsRow2" style="display:none;">
+      <div class="stat-card">
+        <div class="stat-label">Neck Ang</div>
+        <div class="stat-value" id="neckAngVal">OK</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Torso Ang</div>
+        <div class="stat-value" id="torsoAngVal">OK</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Shldr Drop</div>
+        <div class="stat-value" id="shldrYVal">OK</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Spine Align</div>
+        <div class="stat-value" id="alignErrVal">OK</div>
+      </div>
+    </div>
+
+    <div class="btn-row" id="btnRow"></div>
+
+    <div class="section" id="settingsSection">
+      <div class="section-header" onclick="toggleSection('settingsSection')">
+        <h3>⚙️ Settings</h3>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <div class="setting-row">
+          <div class="setting-label">Sound Alerts<small>Beep when posture is bad</small></div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button class="toggle-btn on" id="toggleSound"></button>
+            <button class="break-btn" id="btnTest">Test</button>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">Camera<small>Rear is best for side view</small></div>
+          <button class="break-btn" id="btnSwitchCam">Switch</button>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">Sensitivity<small>Lower = stricter</small></div>
+          <div class="slider-wrap">
+            <input type="range" id="sliderSens" min="1" max="5" value="4">
+            <div class="slider-labels"><span>V.Strict</span><span>Relaxed</span></div>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">Min Metrics to Flag<small>How many must be off</small></div>
+          <div class="slider-wrap">
+            <input type="range" id="sliderMinIssues" min="1" max="5" value="1">
+            <div class="slider-labels"><span>1</span><span id="minIssuesVal">1</span><span>5</span></div>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">Alert Delay<small>Seconds before warning</small></div>
+          <div class="slider-wrap">
+            <input type="range" id="sliderDelay" min="2" max="15" value="5">
+            <div class="slider-labels"><span>2s</span><span id="delayVal">5s</span><span>15s</span></div>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">Break Reminders<small>Remind to stretch</small></div>
+          <button class="toggle-btn on" id="toggleBreak"></button>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">Break Interval<small>Minutes between reminders</small></div>
+          <div class="slider-wrap">
+            <input type="range" id="sliderBreak" min="15" max="60" value="30" step="5">
+            <div class="slider-labels"><span>15m</span><span id="breakVal">30m</span><span>60m</span></div>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">Show Video<small>Or skeleton only</small></div>
+          <button class="toggle-btn on" id="toggleVideo"></button>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-label">Mini Indicator<small>Floating posture icon</small></div>
+          <button class="toggle-btn on" id="toggleMini"></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="tipsSection">
+      <div class="section-header" onclick="toggleSection('tipsSection')">
+        <h3>💡 Tips for Accuracy</h3>
+        <span class="toggle">▼</span>
+      </div>
+      <div class="section-content">
+        <div class="tips">
+          <strong>Side View Setup:</strong> Place phone on a stand to capture your profile. Ensure ear, shoulder, and hip are visible.<br><br>
+          <strong>Lighting:</strong> Front/side lighting, avoid being backlit.<br><br>
+          <strong>During Calibration:</strong> Sit tall—ears over shoulders, shoulders over hips. Relax naturally.<br><br>
+          <strong>What It Detects:</strong> Forward head, neck angle, torso lean, spine alignment (hip→shoulder→ear).
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ========== STATE ========== */
+const S = {
+  phase: 'idle', // idle, starting, calibrating, monitoring
+  pose: null, stream: null, animId: null,
+
+  // Settings
+  sound: true, showVideo: true, showMini: true, breakRemind: true,
+  sensitivity: 4, alertDelay: 5, breakInterval: 30, minIssues: 1,
+
+  // Camera + perf
+  facingMode: 'environment', // best for side view on phone
+  maxFps: 15,
+  lastSendTs: 0,
+
+  // Audio
+  audioCtx: null, audioReady: false, lastAlert: 0,
+
+  // Calibration
+  calibSamples: [], calibTarget: 60, baseline: null,
+
+  // Detection
+  smoothed: null, alpha: 0.25,
+  badStart: null, frameHist: [], histSize: 20,
+
+  // Session stats
+  sessionStart: null, goodFrames: 0, totalFrames: 0,
+  lastBreak: null,
+  snoozeUntil: 0,
+
+  // Side hysteresis
+  side: 'left',
+
+  // Mini indicator transition
+  miniWasBad: false,
+
+  // Landmarks missing handling
+  noLmFrames: 0,
+  noLmWarnAfter: 12
+};
+
+/* ========== DOM ========== */
+const $ = id => document.getElementById(id);
+const video = $('video');
+const canvas = $('canvas');
+const ctx = canvas.getContext('2d');
+
+/* ========== AUDIO ========== */
+function initAudio() {
+  if (S.audioReady) return;
+  S.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  S.audioReady = true;
+}
+
+function unlockAudioBuffer() {
+  initAudio();
+  const ctxA = S.audioCtx;
+  if (!ctxA) return;
+  if (ctxA.state === 'suspended') ctxA.resume();
+  // iOS-friendly unlock: play a 1-sample buffer
+  const buffer = ctxA.createBuffer(1, 1, 22050);
+  const src = ctxA.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctxA.destination);
+  src.start(0);
+}
+
+function playBeep(force = false) {
+  if (!S.sound && !force) return;
+  if (!force && Date.now() - S.lastAlert < 3000) return;
+  S.lastAlert = Date.now();
+
+  initAudio();
+  const a = S.audioCtx;
+  if (!a) return;
+  if (a.state === 'suspended') a.resume();
+
+  const t = a.currentTime;
+  [[440,0],[520,0.12],[440,0.24]].forEach(([f,d]) => {
+    const o = a.createOscillator(), g = a.createGain();
+    o.connect(g); g.connect(a.destination);
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0.25, t+d);
+    g.gain.exponentialRampToValueAtTime(0.01, t+d+0.1);
+    o.start(t+d); o.stop(t+d+0.12);
+  });
+}
+
+// Extra safety: also unlock on any tap
+document.addEventListener('click', unlockAudioBuffer, {passive:true});
+document.addEventListener('touchstart', unlockAudioBuffer, {passive:true});
+
+/* ========== UI HELPERS ========== */
+function setStatus(icon, main, sub, type='') {
+  $('statusIcon').textContent = icon;
+  $('statusMain').textContent = main;
+  $('statusSub').textContent = sub;
+  $('statusCard').className = 'status-card ' + type;
+}
+
+function showToast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function toggleSection(id) {
+  $(id).classList.toggle('open');
+}
+
+function updateMini(score, isBad) {
+  const m = $('miniIndicator');
+  if (!S.showMini || S.phase !== 'monitoring') { m.style.display = 'none'; return; }
+  m.style.display = 'flex';
+
+  // class + one-shot shake on transition to bad
+  if (isBad) {
+    m.className = 'mini-indicator bad' + (!S.miniWasBad ? ' shake' : '');
+  } else {
+    m.className = 'mini-indicator good';
+  }
+  S.miniWasBad = isBad;
+
+  $('stickFigure').textContent = isBad ? '🧎' : '🧍';
+  $('miniScore').textContent = Math.round(score) + '%';
+}
+
+function updateButtons() {
+  const row = $('btnRow');
+  if (S.phase === 'idle') {
+    row.innerHTML = '<button class="btn-primary" onclick="start()">Start Camera</button>';
+  } else if (S.phase === 'starting') {
+    row.innerHTML = '<button class="btn-secondary" disabled>Starting...</button>';
+  } else if (S.phase === 'calibrating') {
+    row.innerHTML = '<button class="btn-danger" onclick="stop()">Cancel</button>';
+  } else {
+    row.innerHTML =
+      '<button class="btn-success" onclick="recalibrate()">Recalibrate</button>' +
+      '<button class="btn-danger" onclick="stop()">Stop</button>';
+  }
+}
+
+function formatTime(sec) {
+  const m = Math.floor(sec/60), s = sec % 60;
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+/* ========== METRICS (SIDE VIEW) ========== */
+function extractMetrics(lm) {
+  const leftVis = (lm[7]?.visibility||0) + (lm[11]?.visibility||0) + (lm[23]?.visibility||0);
+  const rightVis = (lm[8]?.visibility||0) + (lm[12]?.visibility||0) + (lm[24]?.visibility||0);
+
+  // hysteresis: only switch if visibility difference is meaningful
+  const diff = leftVis - rightVis;
+  if (Math.abs(diff) > 0.2) S.side = diff > 0 ? 'left' : 'right';
+  const useLeft = S.side === 'left';
+
+  const ear = useLeft ? lm[7] : lm[8];
+  const shoulder = useLeft ? lm[11] : lm[12];
+  const hip = useLeft ? lm[23] : lm[24];
+  const knee = useLeft ? lm[25] : lm[26];
+  const nose = lm[0];
+
+  const pts = [ear, shoulder, hip, nose].filter(Boolean);
+  const conf = pts.length ? pts.reduce((s,p)=>s+(p.visibility||0),0)/pts.length : 0;
+
+  const torsoLen = Math.abs((hip?.y ?? 0) - (shoulder?.y ?? 0));
+  const refLen = torsoLen > 0.05 ? torsoLen : 0.2;
+
+  const fwdHead = ((ear?.x ?? 0) - (shoulder?.x ?? 0)) / refLen;
+  const neckAng = Math.atan2(((ear?.x ?? 0) - (shoulder?.x ?? 0)), ((shoulder?.y ?? 0) - (ear?.y ?? 0))) * 57.3;
+  const torsoAng = Math.atan2(((shoulder?.x ?? 0) - (hip?.x ?? 0)), ((hip?.y ?? 0) - (shoulder?.y ?? 0))) * 57.3;
+  const headProt = ((nose?.x ?? 0) - (shoulder?.x ?? 0)) / refLen;
+  const shldrY = (shoulder?.y ?? 0);
+  const idealEarX = (hip?.x ?? 0);
+  const alignErr = Math.abs(((ear?.x ?? 0) - idealEarX)) / refLen;
+
+  return {
+    fwdHead, neckAng, torsoAng, headProt, shldrY, alignErr,
+    conf,
+    pts: {nose, ear, shoulder, hip, knee},
+    refLen,
+    side: S.side
+  };
+}
+
+function smooth(m) {
+  if (!S.smoothed) { S.smoothed = {...m}; return S.smoothed; }
+  const a = S.alpha;
+  ['fwdHead','neckAng','torsoAng','headProt','shldrY','alignErr'].forEach(k => {
+    S.smoothed[k] = a * m[k] + (1-a) * S.smoothed[k];
+  });
+  S.smoothed.conf = m.conf;
+  S.smoothed.pts = m.pts;
+  S.smoothed.refLen = m.refLen;
+  S.smoothed.side = m.side;
+  return S.smoothed;
+}
+
+/* ========== CALIBRATION (ROBUST) ========== */
+function median(arr) {
+  const a = [...arr].sort((x,y)=>x-y);
+  const mid = Math.floor(a.length/2);
+  return a.length % 2 ? a[mid] : (a[mid-1] + a[mid]) / 2;
+}
+function mad(arr, med) {
+  const dev = arr.map(v => Math.abs(v - med));
+  return median(dev);
+}
+
+function addCalibSample(m) {
+  if (m.conf < 0.5) return false;
+  S.calibSamples.push({fwdHead:m.fwdHead, neckAng:m.neckAng, torsoAng:m.torsoAng, headProt:m.headProt, shldrY:m.shldrY, alignErr:m.alignErr});
+  const pct = S.calibSamples.length / S.calibTarget * 100;
+  $('calibFill').style.width = pct + '%';
+  $('calibText').textContent = `Collecting: ${S.calibSamples.length}/${S.calibTarget}`;
+  if (S.calibSamples.length >= S.calibTarget) { computeBaseline(); return true; }
+  return false;
+}
+
+function computeBaseline() {
+  const samples = S.calibSamples;
+  const keys = ['fwdHead','neckAng','torsoAng','headProt','shldrY','alignErr'];
+  const minStd = {fwdHead:0.04, neckAng:2.5, torsoAng:2, headProt:0.05, shldrY:0.008, alignErr:0.04};
+
+  S.baseline = {};
+  keys.forEach(k => {
+    const vals = samples.map(s => s[k]);
+    const med = median(vals);
+    const m = mad(vals, med);
+    let std = Math.max(m * 1.4826, minStd[k] || 0.02);
+    S.baseline[k] = { mean: med, std };
+  });
+
+  S.phase = 'monitoring';
+  S.sessionStart = Date.now();
+  S.lastBreak = Date.now();
+  S.snoozeUntil = 0;
+  S.goodFrames = 0; S.totalFrames = 0;
+  S.miniWasBad = false;
+
+  $('overlayCalib').classList.add('hidden');
+  $('sessionBar').style.display = 'flex';
+  $('statsRow').style.display = 'flex';
+  $('statsRow2').style.display = 'flex';
+  updateButtons();
+  setStatus('✓', 'Monitoring Active', 'Baseline captured', 'good');
+  showToast('Calibration complete!');
+}
+
+/* ========== DETECTION ========== */
+function evaluate(m) {
+  if (!S.baseline) return null;
+  const thresh = [1.0, 1.5, 2.2, 3.0, 4.0][S.sensitivity - 1];
+
+  const checks = {
+    fwdHead:  {w:1.5, dir:1, label:'Head Forward'},
+    neckAng:  {w:1.5, dir:1, label:'Neck Angle'},
+    torsoAng: {w:1.2, dir:1, label:'Torso Angle'},
+    headProt: {w:1.0, dir:1, label:'Head Protrusion'},
+    shldrY:   {w:0.8, dir:1, label:'Shoulder Drop'},
+    alignErr: {w:1.0, dir:1, label:'Spine Align'}
+  };
+
+  let score = 0, maxScore = 0;
+  const issues = [], details = {};
+
+  Object.entries(checks).forEach(([k,c]) => {
+    const b = S.baseline[k];
+    const z = (m[k] - b.mean) / b.std;
+    const bad = z > thresh;
+    const dev = Math.max(0, Math.abs(z) - 1) / (thresh * 1.5);
+    const s = Math.max(0, (1 - dev) * 100);
+    score += s * c.w; maxScore += 100 * c.w;
+    details[k] = {z, bad, s, label: c.label};
+    if (bad) issues.push(k);
+  });
+
+  const overall = maxScore > 0 ? score / maxScore * 100 : 100;
+  const isBad = issues.length >= S.minIssues || overall < 40;
+  return {overall, issues, isBad, details};
+}
+
+function handleResult(r) {
+  if (!r) return;
+
+  S.totalFrames++;
+  S.frameHist.push(r.isBad);
+  if (S.frameHist.length > S.histSize) S.frameHist.shift();
+
+  const badCnt = S.frameHist.filter(Boolean).length;
+  const sustained = badCnt >= S.histSize * 0.7;
+
+  $('scoreVal').textContent = Math.round(r.overall);
+  $('scoreVal').className = 'stat-value ' + (r.overall < 50 ? 'bad' : 'good');
+
+  const metricMap = {
+    fwdHead: 'fwdHeadVal',
+    headProt: 'headProtVal',
+    neckAng: 'neckAngVal',
+    torsoAng: 'torsoAngVal',
+    shldrY: 'shldrYVal',
+    alignErr: 'alignErrVal'
+  };
+
+  Object.entries(metricMap).forEach(([key, elId]) => {
+    const d = r.details[key];
+    if (d) {
+      $(elId).textContent = d.bad ? '⚠️' : 'OK';
+      $(elId).className = 'stat-value ' + (d.bad ? 'bad' : 'good');
+    }
+  });
+
+  if (sustained) {
+    if (!S.badStart) S.badStart = Date.now();
+    const dur = (Date.now() - S.badStart) / 1000;
+
+    if (dur >= S.alertDelay) {
+      setStatus('⚠️', 'Fix Your Posture!', formatIssues(r.issues), 'bad');
+      playBeep();
+      updateMini(r.overall, true);
+    } else {
+      const rem = Math.ceil(S.alertDelay - dur);
+      setStatus('⏳', 'Posture Drifting...', `Alert in ${rem}s`, 'warn');
+      updateMini(r.overall, false);
+    }
+  } else {
+    S.badStart = null;
+    S.goodFrames++;
+    setStatus('✓', 'Good Posture', `Score: ${Math.round(r.overall)}%`, 'good');
+    updateMini(r.overall, false);
+  }
+
+  // Session stats + break reminder
+  if (S.sessionStart) {
+    const elapsed = Math.floor((Date.now() - S.sessionStart) / 1000);
+    $('sessionTimer').textContent = formatTime(elapsed);
+
+    const goodPct = S.totalFrames > 0 ? Math.round(S.goodFrames / S.totalFrames * 100) : 0;
+    $('goodPct').textContent = goodPct + '%';
+
+    if (S.breakRemind) {
+      const now = Date.now();
+      const modalOpen = $('breakModal').classList.contains('show');
+      if (!modalOpen && now >= S.snoozeUntil) {
+        const sinceLast = (now - S.lastBreak) / 60000;
+        if (sinceLast >= S.breakInterval) $('breakModal').classList.add('show');
+      }
+    }
+  }
+}
+
+function formatIssues(issues) {
+  const map = {fwdHead:'Head forward', neckAng:'Neck tilted', torsoAng:'Torso leaning', headProt:'Head jutting', shldrY:'Shoulders dropped', alignErr:'Spine misaligned'};
+  return issues.slice(0,2).map(i => map[i] || i).join(', ');
+}
+
+/* ========== DRAWING ========== */
+function draw(m) {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0,0,w,h);
+
+  if (S.showVideo) {
+    ctx.drawImage(video, 0, 0, w, h);
+  } else {
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0,0,w,h);
+  }
+
+  if (!m || !m.pts || !m.pts.hip || !m.pts.shoulder || !m.pts.ear || !m.pts.nose) return;
+
+  const p = m.pts, sc = pt => ({x:pt.x*w, y:pt.y*h});
+  const isAlerting = S.badStart && (Date.now() - S.badStart)/1000 >= S.alertDelay;
+  const col = isAlerting ? '#ef4444' : '#22c55e';
+
+  ctx.lineWidth = 3;
+
+  // vertical reference from hip
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.setLineDash([5,5]);
+  ctx.beginPath();
+  ctx.moveTo(sc(p.hip).x, sc(p.hip).y);
+  ctx.lineTo(sc(p.hip).x, 0);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // spine hip -> shoulder -> ear
+  ctx.strokeStyle = col;
+  ctx.beginPath();
+  ctx.moveTo(sc(p.hip).x, sc(p.hip).y);
+  ctx.lineTo(sc(p.shoulder).x, sc(p.shoulder).y);
+  ctx.lineTo(sc(p.ear).x, sc(p.ear).y);
+  ctx.stroke();
+
+  // head ear -> nose
+  ctx.strokeStyle = '#f59e0b';
+  ctx.beginPath();
+  ctx.moveTo(sc(p.ear).x, sc(p.ear).y);
+  ctx.lineTo(sc(p.nose).x, sc(p.nose).y);
+  ctx.stroke();
+
+  [p.nose, p.ear, p.shoulder, p.hip].forEach((pt, i) => {
+    ctx.beginPath();
+    ctx.arc(sc(pt).x, sc(pt).y, i === 0 ? 5 : 7, 0, Math.PI*2);
+    ctx.fillStyle = col;
+    ctx.fill();
+  });
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font = '12px sans-serif';
+  ctx.fillText(m.side + ' side', 10, 20);
+}
+
+/* ========== POSE CALLBACK ========== */
+function onPose(results) {
+  if (!results.poseLandmarks) {
+    S.noLmFrames++;
+    if (S.noLmFrames >= S.noLmWarnAfter && S.phase !== 'idle') {
+      setStatus('📷', 'Move into Frame', 'Make sure ear/shoulder/hip are visible', 'warn');
+      updateMini(0, false);
+    }
+    return;
+  }
+
+  S.noLmFrames = 0;
+
+  const raw = extractMetrics(results.poseLandmarks);
+  const m = smooth(raw);
+  draw(m);
+
+  if (S.phase === 'calibrating') {
+    if (m.conf > 0.5) addCalibSample(m);
+  } else if (S.phase === 'monitoring') {
+    const r = evaluate(m);
+    handleResult(r);
+  }
+}
+
+/* ========== LOOP (FPS CAP) ========== */
+async function loop(ts) {
+  if (!S.pose) return;
+  const minDt = 1000 / S.maxFps;
+
+  if (!S.lastSendTs) S.lastSendTs = ts;
+
+  if ((ts - S.lastSendTs) >= minDt && video.readyState >= 2) {
+    S.lastSendTs = ts;
+    await S.pose.send({image: video});
+  }
+
+  S.animId = requestAnimationFrame(loop);
+}
+
+/* ========== START/STOP ========== */
+async function start() {
+  // iPhone audio: unlock in the same user gesture
+  unlockAudioBuffer();
+
+  S.phase = 'starting';
+  updateButtons();
+  setStatus('⏳', 'Starting...', 'Initializing camera');
+
+  try {
+    S.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: S.facingMode }
+    });
+    video.srcObject = S.stream;
+    await video.play();
+
+    await new Promise(res => {
+      const check = () => video.videoWidth > 0 ? res() : requestAnimationFrame(check);
+      check();
+    });
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    S.pose = new Pose({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
+    S.pose.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    S.pose.onResults(onPose);
+
+    $('overlayIdle').classList.add('hidden');
+    startCalibration();
+
+    S.lastSendTs = 0;
+    S.animId = requestAnimationFrame(loop);
+  } catch (e) {
+    S.phase = 'idle';
+    updateButtons();
+    setStatus('❌', 'Error', e.message || String(e));
+  }
+}
+
+function startCalibration() {
+  S.phase = 'calibrating';
+  S.calibSamples = [];
+  S.baseline = null;
+  S.smoothed = null;
+  S.frameHist = [];
+  S.badStart = null;
+  S.noLmFrames = 0;
+  S.miniWasBad = false;
+
+  $('overlayCalib').classList.remove('hidden');
+  $('calibFill').style.width = '0%';
+  $('calibText').textContent = `Collecting: 0/${S.calibTarget}`;
+  $('statsRow').style.display = 'none';
+  $('statsRow2').style.display = 'none';
+  $('sessionBar').style.display = 'none';
+  updateMini(0, false);
+  updateButtons();
+  setStatus('📸', 'Calibrating', 'Hold good posture...');
+}
+
+function recalibrate() {
+  showToast('Recalibrating...');
+  startCalibration();
+}
+
+function stop() {
+  if (S.animId) cancelAnimationFrame(S.animId);
+  S.animId = null;
+
+  if (S.stream) S.stream.getTracks().forEach(t => t.stop());
+  S.stream = null;
+
+  S.phase = 'idle';
+  S.baseline = null;
+  S.calibSamples = [];
+  S.smoothed = null;
+  S.frameHist = [];
+  S.badStart = null;
+  S.sessionStart = null;
+  S.noLmFrames = 0;
+  S.miniWasBad = false;
+
+  $('overlayIdle').classList.remove('hidden');
+  $('overlayCalib').classList.add('hidden');
+  $('statsRow').style.display = 'none';
+  $('statsRow2').style.display = 'none';
+  $('sessionBar').style.display = 'none';
+  $('miniIndicator').style.display = 'none';
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  updateButtons();
+  setStatus('⏸️', 'Ready', 'Tap Start to begin monitoring');
+}
+
+/* ========== BREAK MODAL ========== */
+function takeBreak() {
+  $('breakModal').classList.add('show');
+}
+
+function dismissBreak() {
+  $('breakModal').classList.remove('show');
+  S.lastBreak = Date.now();
+  S.snoozeUntil = 0;
+  showToast('Great job stretching!');
+}
+
+function snoozeBreak() {
+  $('breakModal').classList.remove('show');
+  S.snoozeUntil = Date.now() + 5 * 60000;
+  showToast('Reminder snoozed for 5 min');
+}
+
+/* ========== SETTINGS ========== */
+$('toggleSound').onclick = function() { S.sound = !S.sound; this.classList.toggle('on', S.sound); };
+$('toggleVideo').onclick = function() { S.showVideo = !S.showVideo; this.classList.toggle('on', S.showVideo); };
+$('toggleMini').onclick = function() { S.showMini = !S.showMini; this.classList.toggle('on', S.showMini); if (!S.showMini) $('miniIndicator').style.display = 'none'; };
+$('toggleBreak').onclick = function() { S.breakRemind = !S.breakRemind; this.classList.toggle('on', S.breakRemind); };
+$('btnTest').onclick = () => { unlockAudioBuffer(); playBeep(true); };
+
+$('sliderSens').oninput = function() { S.sensitivity = +this.value; };
+$('sliderMinIssues').oninput = function() { S.minIssues = +this.value; $('minIssuesVal').textContent = this.value; };
+$('sliderDelay').oninput = function() { S.alertDelay = +this.value; $('delayVal').textContent = this.value + 's'; };
+$('sliderBreak').oninput = function() { S.breakInterval = +this.value; $('breakVal').textContent = this.value + 'm'; };
+
+$('btnSwitchCam').onclick = async () => {
+  // switch only if running
+  S.facingMode = (S.facingMode === 'environment') ? 'user' : 'environment';
+  showToast('Switching camera...');
+  if (S.phase === 'idle') return;
+  stop();
+  await start();
+};
+
+$('miniIndicator').onclick = () => window.scrollTo({top: 0, behavior: 'smooth'});
+
+/* ========== INIT ========== */
+updateButtons();
+
+// optional: register service worker for offline shell
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html>
